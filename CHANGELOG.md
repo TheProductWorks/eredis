@@ -1,5 +1,9 @@
 # CHANGELOG
 
+## v1.0.9
+
+* Added Basic Authentation (HTTP) support over TCP calls
+
 ## v1.0.8
 
 * Fixed include directive to work with rebar 2.5.1. Thanks to Feng Hao
