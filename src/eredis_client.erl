@@ -25,7 +25,7 @@
 -include("eredis.hrl").
 
 %% API
--export([start_link/6, stop/1, select_database/2]).
+-export([start_link/7, stop/1, select_database/2]).
 
 -export([do_sync_command/2]).
 
@@ -40,6 +40,7 @@
           database :: binary() | undefined,
           reconnect_sleep :: reconnect_sleep() | undefined,
           connect_timeout :: integer() | undefined,
+          basic_auth :: string() | undefined,
 
           socket :: port() | undefined,
           parser_state :: #pstate{} | undefined,
@@ -55,11 +56,12 @@
                  Database::integer() | undefined,
                  Password::string(),
                  ReconnectSleep::reconnect_sleep(),
-                 ConnectTimeout::integer() | undefined) ->
+                 ConnectTimeout::integer() | undefined,
+                 BasicAuth::string()) ->
                         {ok, Pid::pid()} | {error, Reason::term()}.
-start_link(Host, Port, Database, Password, ReconnectSleep, ConnectTimeout) ->
+start_link(Host, Port, Database, Password, ReconnectSleep, ConnectTimeout, BasicAuth) ->
     gen_server:start_link(?MODULE, [Host, Port, Database, Password,
-                                    ReconnectSleep, ConnectTimeout], []).
+                                    ReconnectSleep, ConnectTimeout, BasicAuth], []).
 
 
 stop(Pid) ->
@@ -69,13 +71,14 @@ stop(Pid) ->
 %% gen_server callbacks
 %%====================================================================
 
-init([Host, Port, Database, Password, ReconnectSleep, ConnectTimeout]) ->
+init([Host, Port, Database, Password, ReconnectSleep, ConnectTimeout, BasicAuth]) ->
     State = #state{host = Host,
                    port = Port,
                    database = read_database(Database),
                    password = list_to_binary(Password),
                    reconnect_sleep = ReconnectSleep,
                    connect_timeout = ConnectTimeout,
+                   basic_auth = BasicAuth,
 
                    parser_state = eredis_parser:init(),
                    queue = queue:new()},
@@ -290,7 +293,7 @@ connect(State) ->
     case gen_tcp:connect(State#state.host, State#state.port,
                          ?SOCKET_OPTS, State#state.connect_timeout) of
         {ok, Socket} ->
-            case authenticate(Socket, State#state.password) of
+            case authenticate(Socket, State) of
                 ok ->
                     case select_database(Socket, State#state.database) of
                         ok ->
@@ -312,9 +315,21 @@ select_database(_Socket, <<"0">>) ->
 select_database(Socket, Database) ->
     do_sync_command(Socket, ["SELECT", " ", Database, "\r\n"]).
 
-authenticate(_Socket, <<>>) ->
+authenticate(Socket, #state{ basic_auth = "", password = Password }) ->
+    authenticate_password(Socket, Password);
+% Basic Auth string comes in format of "username:password"
+authenticate(Socket, #state{ basic_auth = BasicAuth, password = Password }) ->
+    case authenticate_basic_auth(Socket, BasicAuth) of
+        ok -> authenticate_password(Socket, Password);
+        _ -> {error, "Basic authentication failed"}
+    end.
+authenticate_basic_auth(Socket, BasicAuth) ->
+    EncodedAuthString = list_to_binary(base64:encode_to_string(BasicAuth)),
+    gen_tcp:send(Socket, <<"Authorization: Basic ", EncodedAuthString/binary, "\r\n\r\n">>).
+
+authenticate_password(_Socket, <<>>) ->
     ok;
-authenticate(Socket, Password) ->
+authenticate_password(Socket, Password) ->
     do_sync_command(Socket, ["AUTH", " ", Password, "\r\n"]).
 
 %% @doc: Executes the given command synchronously, expects Redis to
